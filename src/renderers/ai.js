@@ -30,6 +30,8 @@ class AiRenderer extends BaseRenderer {
         return this.renderSave();
       case 'create-category':
         return this.renderCreateCategory();
+      case 'update-category':
+        return this.renderUpdateCategory();
       case 'entry':
         return this.renderEntry();
       case 'delete':
@@ -130,6 +132,9 @@ class AiRenderer extends BaseRenderer {
       lines.push(`  profile: ${entry.profile || '-'}`);
       lines.push(`  title: ${(entry.title || entry.query || '-').slice(0, 60)}`);
       lines.push(`  scope: ${entry.scope?.type || 'unknown'}`);
+      if (entry.scope?.path) lines.push(`  path: ${entry.scope.path}`);
+      if (entry.scope?.git?.remote) lines.push(`  git_remote: ${entry.scope.git.remote}`);
+      if (entry.scope?.git?.branch) lines.push(`  git_branch: ${entry.scope.git.branch}`);
       lines.push(`  created: ${entry.created_at ? entry.created_at.split('T')[0] : '-'}`);
 
       // Metadata counts
@@ -159,10 +164,13 @@ class AiRenderer extends BaseRenderer {
 
     lines.push('categories:');
     for (const cat of categories) {
-      lines.push(`- id: ${cat.id ? cat.id.slice(0, 8) : '-'}`);
-      lines.push(`  slug: ${cat.slug}`);
-      lines.push(`  description: ${cat.description}`);
-      if (cat.rules) lines.push(`  rules: ${cat.rules}`);
+      lines.push(`- slug: ${cat.slug}`);
+      lines.push(`  short: ${cat.short_desc}`);
+      lines.push(`  ai: ${cat.ai_summary}`);
+      lines.push(`  rules: ${cat.rules}`);
+      if (cat.examples && cat.examples.length > 0) {
+        lines.push(`  examples: [${cat.examples.join(', ')}]`);
+      }
     }
 
     return lines.join('\n');
@@ -261,12 +269,40 @@ class AiRenderer extends BaseRenderer {
     lines.push(`success: ${success}`);
 
     if (success) {
-      lines.push(`id: ${category?.id}`);
       lines.push(`slug: ${category?.slug}`);
-      lines.push(`description: ${category?.description}`);
-      if (category?.rules) lines.push(`rules: ${category.rules}`);
+      lines.push(`short: ${category?.short_desc}`);
+      lines.push(`ai: ${category?.ai_summary}`);
+      lines.push(`rules: ${category?.rules}`);
+      if (category?.examples?.length > 0) {
+        lines.push(`examples: [${category.examples.join(', ')}]`);
+      }
     } else {
       lines.push(`message: ${message || 'Failed to create category'}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Render update-category confirmation
+   */
+  renderUpdateCategory() {
+    const { success, category, message } = this.data;
+    const lines = [];
+
+    lines.push('type: update-category');
+    lines.push(`success: ${success}`);
+
+    if (success) {
+      lines.push(`slug: ${category?.slug}`);
+      lines.push(`short: ${category?.short_desc}`);
+      lines.push(`ai: ${category?.ai_summary}`);
+      lines.push(`rules: ${category?.rules}`);
+      if (category?.examples?.length > 0) {
+        lines.push(`examples: [${category.examples.join(', ')}]`);
+      }
+    } else {
+      lines.push(`message: ${message || 'Failed to update category'}`);
     }
 
     return lines.join('\n');
@@ -294,18 +330,28 @@ class AiRenderer extends BaseRenderer {
     if (entry.title) lines.push(`title: ${entry.title}`);
     lines.push(`scope: ${entry.scope?.type || 'unknown'}`);
     if (entry.scope?.path) lines.push(`path: ${entry.scope.path}`);
+    if (entry.scope?.git?.remote) lines.push(`git_remote: ${entry.scope.git.remote}`);
+    if (entry.scope?.git?.branch) lines.push(`git_branch: ${entry.scope.git.branch}`);
+
+    // Check if viewing specific sections
+    const viewingSpecificSections = showThinking || showSources || showExamples;
+
+    // Add show_content command when viewing specific sections
+    if (viewingSpecificSections) {
+      lines.push(`show_content: ${baseCmd}`);
+    }
 
     // Examples metadata
     if (entry.examples && entry.examples.length > 0) {
       lines.push('examples:');
-      lines.push(`  number: ${entry.examples.length}`);
+      lines.push(`  count: ${entry.examples.length}`);
       lines.push(`  show_command: ${baseCmd} --examples`);
     }
 
     // Sources metadata
     if (entry.sources && entry.sources.length > 0) {
       lines.push('sources:');
-      lines.push(`  number: ${entry.sources.length}`);
+      lines.push(`  count: ${entry.sources.length}`);
       lines.push(`  show_command: ${baseCmd} --sources`);
     }
 
@@ -318,10 +364,7 @@ class AiRenderer extends BaseRenderer {
 
     lines.push(`created: ${entry.created_at}`);
     if (entry.curated_at) lines.push(`curated: ${entry.curated_at}`);
-    if (entry.category_id) lines.push(`category_id: ${entry.category_id}`);
-
-    // Show content only if NOT viewing specific sections
-    const viewingSpecificSections = showThinking || showSources || showExamples;
+    if (this.data.categorySlug) lines.push(`category: ${this.data.categorySlug}`);
     if (!viewingSpecificSections && entry.content) {
       lines.push('content: |');
       for (const line of entry.content.split('\n')) {
@@ -386,7 +429,6 @@ class AiRenderer extends BaseRenderer {
 
     lines.push('type: delete-category');
     lines.push(`success: ${success}`);
-    lines.push(`id: ${category?.id}`);
     lines.push(`slug: ${category?.slug}`);
 
     return lines.join('\n');

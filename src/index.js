@@ -6,7 +6,7 @@ const { getProvider, listProviders } = require('./providers');
 const profiles = require('./profiles.json');
 const { initStorage } = require('./storage');
 const { createEntry, saveEntry, getUnsavedEntries, getLibraryEntries, curateEntry, getEntryById, deleteEntry } = require('./storage/entries');
-const { createCategory, getCategories, getCategoryById, deleteCategory } = require('./storage/categories');
+const { createCategory, getCategories, getCategoryById, getCategoryBySlug, updateCategory, deleteCategory } = require('./storage/categories');
 const { getRenderer } = require('./renderers');
 
 /**
@@ -18,15 +18,48 @@ function detectCliCommand() {
   const mainFile = require.main ? require.main.filename : null;
   const npmScript = process.env.npm_lifecycle_script;
 
+  // Helper to find package.json by traversing up
+  function findPackageJson(startDir) {
+    let dir = startDir;
+    while (dir !== path.dirname(dir)) {
+      const pkgPath = path.join(dir, 'package.json');
+      if (fs.existsSync(pkgPath)) {
+        return pkgPath;
+      }
+      dir = path.dirname(dir);
+    }
+    return null;
+  }
+
+  // Helper to get bin name from package.json
+  function getBinName(pkgPath) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      if (pkg.bin && typeof pkg.bin === 'object') {
+        return Object.keys(pkg.bin)[0] || null;
+      }
+    } catch (e) {
+      // Ignore parsing errors
+    }
+    return null;
+  }
+
   // Case 1: npm run script
   if (npmScript) {
     const scriptName = process.env.npm_lifecycle_event || 'script';
     return `npm run ${scriptName}`;
   }
 
-  // Case 2: Direct node execution (argv[0] is node, argv[1] is script path)
-  if (argv[0] === process.execPath && argv[1] && argv[1].includes('/')) {
-    return `node ${path.basename(argv[1])}`;
+  // Case 2: Check if invoked via bin name (symlink)
+  const invokedName = argv[1] ? path.basename(argv[1]) : null;
+  if (mainFile) {
+    const pkgPath = findPackageJson(path.dirname(mainFile));
+    if (pkgPath) {
+      const binName = getBinName(pkgPath);
+      if (binName && invokedName === binName) {
+        return binName;
+      }
+    }
   }
 
   // Case 3: Global install or symlink (argv[1] is just the command name, no path)
@@ -34,27 +67,20 @@ function detectCliCommand() {
     return path.basename(argv[1]);
   }
 
-  // Case 4: Check package.json bin field as fallback
+  // Case 4: Direct node execution with .js file - use node + filename
+  if (argv[0] === process.execPath && argv[1] && argv[1].endsWith('.js')) {
+    return `node ${path.basename(argv[1])}`;
+  }
+
+  // Case 5: Final fallback - prefer bin name from package.json
   if (mainFile) {
-    const pkgPath = path.join(path.dirname(mainFile), 'package.json');
-    if (fs.existsSync(pkgPath)) {
-      try {
-        const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-        if (pkg.bin) {
-          if (typeof pkg.bin === 'object') {
-            const binName = Object.keys(pkg.bin)[0];
-            if (binName) return binName;
-          } else if (typeof pkg.bin === 'string') {
-            return pkg.name || 'cli';
-          }
-        }
-      } catch (e) {
-        // Ignore parsing errors
-      }
+    const pkgPath = findPackageJson(path.dirname(mainFile));
+    if (pkgPath) {
+      const binName = getBinName(pkgPath);
+      if (binName) return binName;
     }
   }
 
-  // Case 5: Final fallback
   return `node ${path.basename(mainFile || argv[1] || 'index.js')}`;
 }
 
@@ -64,7 +90,7 @@ const CLI_COMMAND = detectCliCommand();
 // Known subcommands
 const SUBCOMMANDS = ['drafts', 'library', 'categories', 'profiles', 'providers', 'help'];
 // Known actions within subcommands
-const ACTIONS = ['show', 'save', 'rm', 'new'];
+const ACTIONS = ['show', 'save', 'rm', 'new', 'update'];
 
 /**
  * Parse command line arguments with subcommand support
@@ -95,8 +121,13 @@ function parseArgs(args) {
     category: null,
     to: null,
     global: false,
-    desc: null,
+
+    // Category options
+    short: null,
+    long: null,
+    ai: null,
     rules: null,
+    examples: [],
 
     // Show options
     showSources: false,
@@ -127,8 +158,8 @@ function parseArgs(args) {
     // Handle global options before subcommand
     if (arg === '--output' || arg === '-o') {
       result.output = args[++i];
-    } else if (arg.startsWith('--output=') || arg.startsWith('-o=')) {
-      result.output = arg.split('=')[1];
+    } else if (arg === '--profile' || arg === '-p') {
+      result.profile = args[++i];
     } else if (arg === '--help' || arg === '-h') {
       result.help = true;
     }
@@ -138,22 +169,6 @@ function parseArgs(args) {
   // Second pass: parse subcommand-specific args
   while (i < args.length) {
     const arg = args[i];
-
-    // Handle --key=value syntax
-    if (arg.includes('=') && arg.startsWith('-')) {
-      const [key, value] = arg.split('=');
-      if (key === '--output' || key === '-o') {
-        result.output = value;
-      } else if (key === '--profile' || key === '-p') {
-        result.profile = value;
-      } else if (key === '--to') {
-        result.to = value;
-      } else if (key === '--category') {
-        result.category = value;
-      }
-      i++;
-      continue;
-    }
 
     // Actions (show, save, rm, new)
     if (!arg.startsWith('-') && ACTIONS.includes(arg) && !result.action) {
@@ -181,10 +196,16 @@ function parseArgs(args) {
       result.category = args[++i];
     } else if (arg === '--to') {
       result.to = args[++i];
-    } else if (arg === '--desc') {
-      result.desc = args[++i];
+    } else if (arg === '--short') {
+      result.short = args[++i];
+    } else if (arg === '--long') {
+      result.long = args[++i];
+    } else if (arg === '--ai') {
+      result.ai = args[++i];
     } else if (arg === '--rules') {
       result.rules = args[++i];
+    } else if (arg === '--example') {
+      result.examples.push(args[++i]);
     } else if (arg === '--show-thinking' || arg === '--thinking') {
       result.showThinking = true;
     } else if (arg === '--sources') {
@@ -214,7 +235,23 @@ function parseArgs(args) {
 // Help Data
 // ============================================================================
 
-function getRootHelpData() {
+function getRootHelpData(compact = false) {
+  if (compact) {
+    return {
+      type: 'help',
+      content: `kbcli [opts] <query> | kbcli <cmd> [opts]
+
+Commands: drafts, library, categories, profiles, providers
+
+Options:
+  -o <fmt>  Output: md|json|ai
+  -p <name> Profile: general|code|docs|troubleshoot
+  -h        Help
+
+Example: kbcli -p code "React hooks"`
+    };
+  }
+
   return {
     type: 'help',
     content: `kbcli - Knowledge base CLI with profile-based research
@@ -232,6 +269,7 @@ Commands:
 
 Global Options:
   --output, -o <fmt>    Output format: md, json, ai
+  --profile, -p <name>  Profile: general, code, docs, troubleshoot
   --help, -h            Show help
 
 Run 'kbcli <command> --help' for command-specific help.
@@ -245,7 +283,25 @@ Examples:
   };
 }
 
-function getSearchHelpData() {
+function getSearchHelpData(compact = false) {
+  if (compact) {
+    return {
+      type: 'help',
+      content: `kbcli [opts] <query>
+
+Options:
+  -p <name>       Profile: general|code|docs|troubleshoot (default: general)
+  -m <model>      Override model
+  --recency <p>   Filter: day|week|month|year
+  --domains <l>   Domain filter (comma-separated)
+  --max-tokens <n>
+  --thinking      Show reasoning
+  -o <fmt>        Output: md|json|ai
+
+Example: kbcli -p code "React hooks"`
+    };
+  }
+
   return {
     type: 'help',
     content: `kbcli <query> - Execute a search
@@ -269,7 +325,22 @@ Examples:
   };
 }
 
-function getDraftsHelpData() {
+function getDraftsHelpData(compact = false) {
+  if (compact) {
+    return {
+      type: 'help',
+      content: `kbcli drafts [opts] | show <id> | save <id> --to <cat> | rm <id>
+
+Options:
+  --local      Filter to current repo
+  --thinking   Include reasoning
+  --sources    Include citations
+  --examples   Include code examples
+  --to <cat>   Target category (save)
+  --global     Save as global`
+    };
+  }
+
   return {
     type: 'help',
     content: `kbcli drafts - Manage uncategorized research entries
@@ -279,10 +350,6 @@ Usage:
   kbcli drafts show <id> [opts]    View entry content
   kbcli drafts save <id> [opts]    Save to library
   kbcli drafts rm <id>             Delete entry
-
-List Output:
-  Shows metadata: ID, profile, title, scope, date
-  Includes counts: sources, examples, thinking (if present)
 
 List Options:
   --local               Filter to current repository only
@@ -306,7 +373,21 @@ Examples:
   };
 }
 
-function getLibraryHelpData() {
+function getLibraryHelpData(compact = false) {
+  if (compact) {
+    return {
+      type: 'help',
+      content: `kbcli library [opts] | show <id> | rm <id>
+
+Options:
+  --local        Filter to current repo
+  --category <id> Filter by category
+  --thinking     Include reasoning
+  --sources      Include citations
+  --examples     Include code examples`
+    };
+  }
+
   return {
     type: 'help',
     content: `kbcli library - Manage curated library entries
@@ -315,10 +396,6 @@ Usage:
   kbcli library [options]          List library entries
   kbcli library show <id> [opts]   View entry content
   kbcli library rm <id>            Delete entry
-
-List Output:
-  Shows metadata: ID, profile, title, category, date
-  Includes counts: sources, examples, thinking (if present)
 
 List Options:
   --local               Filter to current repository only
@@ -339,28 +416,69 @@ Examples:
   };
 }
 
-function getCategoriesHelpData() {
+function getCategoriesHelpData(compact = false) {
+  if (compact) {
+    return {
+      type: 'help',
+      content: `kbcli categories | new <slug> | update <slug> | rm <slug>
+
+New (all required):
+  --short <text>   Short description
+  --long <text>    Long description
+  --ai <text>      AI summary
+  --rules <text>   When to apply
+  --example <text> Example (repeatable)
+
+Update: --short|--long|--ai|--rules|--example`
+    };
+  }
+
   return {
     type: 'help',
     content: `kbcli categories - Manage categories
 
 Usage:
-  kbcli categories                 List all categories
-  kbcli categories new <slug>      Create new category
-  kbcli categories rm <id>         Delete category
+  kbcli categories                   List all categories
+  kbcli categories new <slug>        Create new category (all fields required)
+  kbcli categories update <slug>     Update category fields
+  kbcli categories rm <slug>         Delete category
 
-New Options:
-  --desc <text>         Description for category
-  --rules <text>        Rules for category
+New Options (all required):
+  --short <text>        Short description (1-line)
+  --long <text>         Long description (detailed)
+  --ai <text>           AI-optimized summary
+  --rules <text>        When to apply this category
+  --example <text>      Example content (repeat for multiple)
+
+Update Options (any combination):
+  --short <text>        Update short description
+  --long <text>         Update long description
+  --ai <text>           Update AI summary
+  --rules <text>        Update rules
+  --example <text>      Replace examples (repeat for multiple)
 
 Examples:
-  kbcli categories
-  kbcli categories new react-hooks --desc "React hooks patterns"
-  kbcli categories rm abc123`
+  kbcli categories new auth \\
+    --short "Authentication patterns" \\
+    --long "OAuth, JWT, session management" \\
+    --ai "auth: oauth|jwt|session patterns" \\
+    --rules "Apply for login, tokens, auth middleware" \\
+    --example "OAuth 2.0 flow" \\
+    --example "JWT refresh rotation"
+
+  kbcli categories update auth --short "Updated description"
+  kbcli categories rm auth`
   };
 }
 
-function getProfilesHelpData() {
+function getProfilesHelpData(compact = false) {
+  if (compact) {
+    return {
+      type: 'help',
+      content: `Profiles: general (default), code, docs, troubleshoot`
+    };
+  }
+
   return {
     type: 'help',
     content: `kbcli profiles - View available search profiles
@@ -376,7 +494,14 @@ Profiles:
   };
 }
 
-function getProvidersHelpData() {
+function getProvidersHelpData(compact = false) {
+  if (compact) {
+    return {
+      type: 'help',
+      content: `Lists configured API providers`
+    };
+  }
+
   return {
     type: 'help',
     content: `kbcli providers - View available API providers
@@ -455,9 +580,17 @@ function handleShow(entryId, location, options = {}) {
     return { type: 'error', message: `Entry not found in ${location}: ${entryId}` };
   }
 
+  // Look up category slug if entry has category_id
+  let categorySlug = null;
+  if (entry.category_id) {
+    const category = getCategoryById(entry.category_id);
+    categorySlug = category?.slug || null;
+  }
+
   return {
     type: 'entry',
     entry,
+    categorySlug,
     showThinking: options.showThinking,
     showSources: options.showSources,
     showExamples: options.showExamples,
@@ -465,17 +598,21 @@ function handleShow(entryId, location, options = {}) {
   };
 }
 
-function handleSave(entryId, categoryId, isGlobal) {
-  if (!categoryId) {
+function handleSave(entryId, categorySlugOrId, isGlobal) {
+  if (!categorySlugOrId) {
     return { type: 'error', message: 'Missing --to <category>. Use: kbcli drafts save <id> --to <category>' };
   }
 
-  const category = getCategoryById(categoryId);
+  // Look up by slug first, then by ID
+  let category = getCategoryBySlug(categorySlugOrId);
   if (!category) {
-    return { type: 'error', message: `Category not found: ${categoryId}\nRun 'kbcli categories' to list available categories` };
+    category = getCategoryById(categorySlugOrId);
+  }
+  if (!category) {
+    return { type: 'error', message: `Category not found: ${categorySlugOrId}\nRun 'kbcli categories' to list available categories` };
   }
 
-  const entry = curateEntry(entryId, categoryId, isGlobal);
+  const entry = curateEntry(entryId, category.id, isGlobal);
   if (!entry) {
     return { type: 'error', message: `Entry not found in drafts: ${entryId}` };
   }
@@ -501,16 +638,34 @@ function handleRm(entryId, location) {
   return { type: 'delete', success: true, entry };
 }
 
-function handleNewCategory(slug, desc, rules) {
+function handleNewCategory(slug, options) {
   if (!slug) {
     return { type: 'error', message: 'Missing slug. Use: kbcli categories new <slug>' };
+  }
+
+  // Check required fields
+  const missing = [];
+  if (!options.short) missing.push('--short');
+  if (!options.long) missing.push('--long');
+  if (!options.ai) missing.push('--ai');
+  if (!options.rules) missing.push('--rules');
+  if (!options.examples || options.examples.length === 0) missing.push('--example');
+
+  if (missing.length > 0) {
+    return {
+      type: 'error',
+      message: `Missing required fields: ${missing.join(', ')}\nRun 'kbcli categories --help' for usage`
+    };
   }
 
   try {
     const category = createCategory({
       slug,
-      description: desc || `Category for ${slug}`,
-      rules: rules || ''
+      short_desc: options.short,
+      long_desc: options.long,
+      ai_summary: options.ai,
+      rules: options.rules,
+      examples: options.examples
     });
     return { type: 'create-category', success: true, category };
   } catch (error) {
@@ -518,19 +673,49 @@ function handleNewCategory(slug, desc, rules) {
   }
 }
 
-function handleRmCategory(categoryId) {
-  if (!categoryId) {
-    return { type: 'error', message: 'Missing category ID. Use: kbcli categories rm <id>' };
+function handleUpdateCategory(slug, options) {
+  if (!slug) {
+    return { type: 'error', message: 'Missing slug. Use: kbcli categories update <slug>' };
   }
 
-  const category = getCategoryById(categoryId);
+  const category = getCategoryBySlug(slug);
   if (!category) {
-    return { type: 'error', message: `Category not found: ${categoryId}` };
+    return { type: 'error', message: `Category not found: ${slug}` };
   }
 
-  const deleted = deleteCategory(categoryId);
+  // Build updates object from provided options
+  const updates = {};
+  if (options.short) updates.short_desc = options.short;
+  if (options.long) updates.long_desc = options.long;
+  if (options.ai) updates.ai_summary = options.ai;
+  if (options.rules) updates.rules = options.rules;
+  if (options.examples && options.examples.length > 0) updates.examples = options.examples;
+
+  if (Object.keys(updates).length === 0) {
+    return { type: 'error', message: 'No fields to update. Provide at least one of: --short, --long, --ai, --rules, --example' };
+  }
+
+  try {
+    const updated = updateCategory(category.id, updates);
+    return { type: 'update-category', success: true, category: updated };
+  } catch (error) {
+    return { type: 'error', message: error.message };
+  }
+}
+
+function handleRmCategory(slug) {
+  if (!slug) {
+    return { type: 'error', message: 'Missing slug. Use: kbcli categories rm <slug>' };
+  }
+
+  const category = getCategoryBySlug(slug);
+  if (!category) {
+    return { type: 'error', message: `Category not found: ${slug}` };
+  }
+
+  const deleted = deleteCategory(category.id);
   if (!deleted) {
-    return { type: 'error', message: `Failed to delete category: ${categoryId}` };
+    return { type: 'error', message: `Failed to delete category: ${slug}` };
   }
 
   return { type: 'delete-category', success: true, category };
@@ -574,18 +759,14 @@ async function executeSearch(args) {
   });
   saveEntry(entry);
 
+  // Return entry data for rendering (same as drafts show)
   return {
-    type: 'research',
-    provider: result.provider,
-    model: result.model,
-    profile: args.profile,
-    tokens: result.usage?.total_tokens,
-    saved: true,
-    title: result.title,
-    content: result.content || result.answer,
-    thinking: result.thinking,
-    examples: result.examples,
-    sources: result.sources
+    type: 'entry',
+    entry: { ...entry, location: 'unsaved' },
+    showThinking: args.showThinking,
+    showSources: args.showSources,
+    showExamples: args.showExamples,
+    cliCommand: CLI_COMMAND
   };
 }
 
@@ -597,6 +778,7 @@ async function main() {
   initStorage();
 
   const args = parseArgs(process.argv.slice(2));
+  const compact = args.output === 'ai';
   let data;
 
   try {
@@ -604,7 +786,7 @@ async function main() {
     switch (args.subcommand) {
       case 'drafts':
         if (args.help) {
-          data = getDraftsHelpData();
+          data = getDraftsHelpData(compact);
         } else if (args.action === 'show') {
           data = handleShow(args.actionArg, 'unsaved', {
             showThinking: args.showThinking,
@@ -622,7 +804,7 @@ async function main() {
 
       case 'library':
         if (args.help) {
-          data = getLibraryHelpData();
+          data = getLibraryHelpData(compact);
         } else if (args.action === 'show') {
           data = handleShow(args.actionArg, 'library', {
             showThinking: args.showThinking,
@@ -638,9 +820,23 @@ async function main() {
 
       case 'categories':
         if (args.help) {
-          data = getCategoriesHelpData();
+          data = getCategoriesHelpData(compact);
         } else if (args.action === 'new') {
-          data = handleNewCategory(args.actionArg, args.desc, args.rules);
+          data = handleNewCategory(args.actionArg, {
+            short: args.short,
+            long: args.long,
+            ai: args.ai,
+            rules: args.rules,
+            examples: args.examples
+          });
+        } else if (args.action === 'update') {
+          data = handleUpdateCategory(args.actionArg, {
+            short: args.short,
+            long: args.long,
+            ai: args.ai,
+            rules: args.rules,
+            examples: args.examples
+          });
         } else if (args.action === 'rm') {
           data = handleRmCategory(args.actionArg);
         } else {
@@ -650,7 +846,7 @@ async function main() {
 
       case 'profiles':
         if (args.help) {
-          data = getProfilesHelpData();
+          data = getProfilesHelpData(compact);
         } else {
           data = getProfilesData();
         }
@@ -658,7 +854,7 @@ async function main() {
 
       case 'providers':
         if (args.help) {
-          data = getProvidersHelpData();
+          data = getProvidersHelpData(compact);
         } else {
           data = getProvidersData();
         }
@@ -667,11 +863,11 @@ async function main() {
       default:
         // No subcommand - either help or search
         if (args.help) {
-          data = args.query ? getSearchHelpData() : getRootHelpData();
+          data = args.query ? getSearchHelpData(compact) : getRootHelpData(compact);
         } else if (args.query) {
           data = await executeSearch(args);
         } else {
-          data = getRootHelpData();
+          data = getRootHelpData(compact);
         }
     }
   } catch (error) {

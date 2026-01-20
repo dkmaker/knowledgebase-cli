@@ -1,3 +1,7 @@
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+
 /**
  * Generate a short, human-readable ID.
  * Uses 5 characters from a set excluding confusing chars (i, l, o, 0, 1).
@@ -58,7 +62,85 @@ function stripThinking(response) {
   return { thinking: null, content: response };
 }
 
+/**
+ * Find the git repository root by traversing up from startPath.
+ * @param {string} startPath - Starting directory path
+ * @returns {string|null} Git root path or null if not in a repo
+ */
+function findGitRoot(startPath) {
+  let dir = startPath;
+  while (dir !== path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, '.git'))) {
+      return dir;
+    }
+    dir = path.dirname(dir);
+  }
+  return null;
+}
+
+/**
+ * Get the git remote origin URL.
+ * @param {string} gitRoot - Git repository root path
+ * @returns {string|null} Remote URL or null if not configured
+ */
+function getGitRemote(gitRoot) {
+  try {
+    const result = execSync('git config --get remote.origin.url', {
+      cwd: gitRoot,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    return result.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Get the current git branch name.
+ * @param {string} gitRoot - Git repository root path
+ * @returns {string|null} Branch name or null if detached/error
+ */
+function getGitBranch(gitRoot) {
+  try {
+    const result = execSync('git rev-parse --abbrev-ref HEAD', {
+      cwd: gitRoot,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    return result.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Detect scope information for the current working directory.
+ * @param {string} cwd - Current working directory
+ * @returns {Object} Scope object with type, path, and optional git info
+ */
+function detectScope(cwd) {
+  const gitRoot = findGitRoot(cwd);
+
+  if (!gitRoot) {
+    return { type: 'folder', path: cwd };
+  }
+
+  return {
+    type: 'repository',
+    path: gitRoot,
+    git: {
+      remote: getGitRemote(gitRoot),
+      branch: getGitBranch(gitRoot)
+    }
+  };
+}
+
 module.exports = {
   generateId,
-  stripThinking
+  stripThinking,
+  findGitRoot,
+  getGitRemote,
+  getGitBranch,
+  detectScope
 };

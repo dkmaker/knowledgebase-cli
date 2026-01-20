@@ -22,11 +22,22 @@ function initStorage() {
     fs.mkdirSync(dataDir, { recursive: true });
   }
 
+  // Migrate unsaved.json -> drafts.json if needed
+  const oldDraftsPath = path.join(dataDir, 'unsaved.json');
+  const newDraftsPath = path.join(dataDir, 'drafts.json');
+  if (fs.existsSync(oldDraftsPath) && !fs.existsSync(newDraftsPath)) {
+    fs.renameSync(oldDraftsPath, newDraftsPath);
+  }
+
   // Initialize files if they don't exist
   const files = {
     'categories.json': { categories: [] },
-    'unsaved.json': { entries: [] },
-    'library.json': { entries: [] }
+    'drafts.json': { entries: [] },
+    'library.json': { entries: [] },
+    // History files (empty objects keyed by ID)
+    'categories_history.json': {},
+    'drafts_history.json': {},
+    'library_history.json': {}
   };
 
   for (const [filename, defaultContent] of Object.entries(files)) {
@@ -41,7 +52,7 @@ function initStorage() {
 
 /**
  * Get path to a specific data file.
- * @param {string} filename - File name (categories.json, unsaved.json, library.json)
+ * @param {string} filename - File name (categories.json, drafts.json, library.json)
  */
 function getFilePath(filename) {
   return path.join(getDataDir(), filename);

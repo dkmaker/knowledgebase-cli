@@ -29,6 +29,8 @@ class MarkdownRenderer extends BaseRenderer {
         return this.renderSave();
       case 'create-category':
         return this.renderCreateCategory();
+      case 'update-category':
+        return this.renderUpdateCategory();
       case 'entry':
         return this.renderEntry();
       case 'delete':
@@ -187,7 +189,22 @@ class MarkdownRenderer extends BaseRenderer {
       const id = entry.id ? entry.id.slice(0, 8) : '-';
       const profile = entry.profile || '-';
       const entryTitle = (entry.title || entry.query || '-').slice(0, 40);
-      const scope = entry.scope?.type === 'general' ? '[general]' : `[${entry.scope?.path || '-'}]`;
+
+      // Build scope display: prefer git remote (short form) over path
+      let scope;
+      if (entry.scope?.type === 'global') {
+        scope = '[global]';
+      } else if (entry.scope?.git?.remote) {
+        // Extract repo name from remote URL (e.g., "user/repo" from git@github.com:user/repo.git)
+        const remote = entry.scope.git.remote;
+        const match = remote.match(/[/:]([\w-]+\/[\w.-]+?)(?:\.git)?$/);
+        const repoName = match ? match[1] : remote;
+        const branch = entry.scope.git.branch ? `@${entry.scope.git.branch}` : '';
+        scope = `[${repoName}${branch}]`;
+      } else {
+        scope = `[${entry.scope?.type || 'unknown'}:${entry.scope?.path || '-'}]`;
+      }
+
       const created = entry.created_at ? entry.created_at.split('T')[0] : '-';
 
       // Build metadata string
@@ -220,10 +237,15 @@ class MarkdownRenderer extends BaseRenderer {
     parts.push('## Categories\n');
     for (const cat of categories) {
       parts.push(`### ${cat.slug}`);
-      parts.push(`- **ID**: ${cat.id}`);
-      parts.push(`- **Description**: ${cat.description}`);
-      if (cat.rules) {
-        parts.push(`- **Rules**: ${cat.rules}`);
+      parts.push(`- **Short**: ${cat.short_desc}`);
+      parts.push(`- **Description**: ${cat.long_desc}`);
+      parts.push(`- **AI Summary**: ${cat.ai_summary}`);
+      parts.push(`- **Rules**: ${cat.rules}`);
+      if (cat.examples && cat.examples.length > 0) {
+        parts.push('- **Examples**:');
+        for (const ex of cat.examples) {
+          parts.push(`  - ${ex}`);
+        }
       }
       parts.push('');
     }
@@ -305,14 +327,40 @@ class MarkdownRenderer extends BaseRenderer {
 
     if (success) {
       parts.push(`Category created.`);
-      parts.push(`  ID: ${category?.id}`);
       parts.push(`  Slug: ${category?.slug}`);
-      parts.push(`  Description: ${category?.description}`);
-      if (category?.rules) {
-        parts.push(`  Rules: ${category.rules}`);
+      parts.push(`  Short: ${category?.short_desc}`);
+      parts.push(`  Description: ${category?.long_desc}`);
+      parts.push(`  AI Summary: ${category?.ai_summary}`);
+      parts.push(`  Rules: ${category?.rules}`);
+      if (category?.examples?.length > 0) {
+        parts.push(`  Examples: ${category.examples.join(', ')}`);
       }
     } else {
       parts.push(`Error: ${message || 'Failed to create category'}`);
+    }
+
+    return parts.join('\n');
+  }
+
+  /**
+   * Render update-category confirmation (no frontmatter - confirmation message)
+   */
+  renderUpdateCategory() {
+    const { success, category, message } = this.data;
+    const parts = [];
+
+    if (success) {
+      parts.push(`Category updated.`);
+      parts.push(`  Slug: ${category?.slug}`);
+      parts.push(`  Short: ${category?.short_desc}`);
+      parts.push(`  Description: ${category?.long_desc}`);
+      parts.push(`  AI Summary: ${category?.ai_summary}`);
+      parts.push(`  Rules: ${category?.rules}`);
+      if (category?.examples?.length > 0) {
+        parts.push(`  Examples: ${category.examples.join(', ')}`);
+      }
+    } else {
+      parts.push(`Error: ${message || 'Failed to update category'}`);
     }
 
     return parts.join('\n');
@@ -342,9 +390,19 @@ class MarkdownRenderer extends BaseRenderer {
     };
 
     if (entry.curated_at) frontmatter.curated = entry.curated_at;
-    if (entry.category_id) frontmatter.category_id = entry.category_id;
+    if (this.data.categorySlug) frontmatter.category = this.data.categorySlug;
     if (entry.scope) frontmatter.scope = entry.scope.type;
     if (entry.scope?.path) frontmatter.path = entry.scope.path;
+    if (entry.scope?.git?.remote) frontmatter.git_remote = entry.scope.git.remote;
+    if (entry.scope?.git?.branch) frontmatter.git_branch = entry.scope.git.branch;
+
+    // Check if viewing specific sections
+    const viewingSpecificSections = showThinking || showSources || showExamples;
+
+    // Add show_content command when viewing specific sections
+    if (viewingSpecificSections) {
+      frontmatter.show_content = baseCmd;
+    }
 
     // Add examples metadata
     if (entry.examples && entry.examples.length > 0) {
@@ -373,7 +431,6 @@ class MarkdownRenderer extends BaseRenderer {
     parts.push(this.buildFrontmatter(frontmatter));
 
     // Show content only if NOT viewing specific sections
-    const viewingSpecificSections = showThinking || showSources || showExamples;
     if (!viewingSpecificSections && entry.content) {
       parts.push(entry.content);
       parts.push('');
@@ -437,7 +494,6 @@ class MarkdownRenderer extends BaseRenderer {
 
     if (success) {
       parts.push(`Category deleted.`);
-      parts.push(`  ID: ${category?.id}`);
       parts.push(`  Slug: ${category?.slug}`);
     }
 

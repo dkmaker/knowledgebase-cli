@@ -1,12 +1,12 @@
 const { readDataFile, writeDataFile } = require('./index');
-const { generateId } = require('./utils');
+const { generateId, detectScope, findGitRoot } = require('./utils');
 
 /**
  * Get all existing entry IDs from unsaved and library.
  * @returns {Set<string>} Set of existing IDs
  */
 function getExistingIds() {
-  const unsaved = readDataFile('unsaved.json');
+  const unsaved = readDataFile('drafts.json');
   const library = readDataFile('library.json');
   const ids = new Set();
 
@@ -28,6 +28,15 @@ function getExistingIds() {
  */
 function createEntry(result, metadata = {}) {
   const existingIds = getExistingIds();
+  const cwd = metadata.cwd || process.cwd();
+
+  // Determine scope: global flag overrides auto-detection
+  let scope;
+  if (metadata.general) {
+    scope = { type: 'global', path: null };
+  } else {
+    scope = detectScope(cwd);
+  }
 
   return {
     id: generateId(existingIds),
@@ -36,10 +45,7 @@ function createEntry(result, metadata = {}) {
     profile: metadata.profile || 'general',
     model: result.model,
     provider: result.provider,
-    scope: {
-      type: metadata.general ? 'general' : 'repository',
-      path: metadata.general ? null : (metadata.cwd || process.cwd())
-    },
+    scope,
     title: result.title || '',
     content: result.content || result.answer || '',
     thinking: result.thinking || null,
@@ -52,14 +58,14 @@ function createEntry(result, metadata = {}) {
 }
 
 /**
- * Save an entry to unsaved.json.
+ * Save an entry to drafts.json.
  * @param {Object} entry - Entry to save
  * @returns {Object} Saved entry
  */
 function saveEntry(entry) {
-  const data = readDataFile('unsaved.json');
+  const data = readDataFile('drafts.json');
   data.entries.push(entry);
-  writeDataFile('unsaved.json', data);
+  writeDataFile('drafts.json', data);
   return entry;
 }
 
@@ -69,14 +75,19 @@ function saveEntry(entry) {
  * @returns {Array} Array of entries
  */
 function getUnsavedEntries(options = {}) {
-  const data = readDataFile('unsaved.json');
+  const data = readDataFile('drafts.json');
   let entries = data.entries;
 
   // Filter by scope if --local flag
   if (options.local) {
     const cwd = options.cwd || process.cwd();
+    // Use git root for matching (finds entries from same repo regardless of subdirectory)
+    const gitRoot = findGitRoot(cwd);
+    const matchPath = gitRoot || cwd;
+
     entries = entries.filter(e =>
-      e.scope.type === 'repository' && e.scope.path === cwd
+      (e.scope.type === 'repository' || e.scope.type === 'folder') &&
+      e.scope.path === matchPath
     );
   }
 
@@ -100,8 +111,13 @@ function getLibraryEntries(options = {}) {
   // Filter by scope if --local flag
   if (options.local) {
     const cwd = options.cwd || process.cwd();
+    // Use git root for matching (finds entries from same repo regardless of subdirectory)
+    const gitRoot = findGitRoot(cwd);
+    const matchPath = gitRoot || cwd;
+
     entries = entries.filter(e =>
-      e.scope.type === 'repository' && e.scope.path === cwd
+      (e.scope.type === 'repository' || e.scope.type === 'folder') &&
+      e.scope.path === matchPath
     );
   }
 
@@ -116,7 +132,7 @@ function getLibraryEntries(options = {}) {
  * @returns {Object|null} Curated entry or null if not found
  */
 function curateEntry(entryId, categoryId) {
-  const unsaved = readDataFile('unsaved.json');
+  const unsaved = readDataFile('drafts.json');
   const library = readDataFile('library.json');
 
   // Find entry in unsaved (exact or prefix match)
@@ -132,7 +148,7 @@ function curateEntry(entryId, categoryId) {
   library.entries.push(entry);
 
   // Save both files
-  writeDataFile('unsaved.json', unsaved);
+  writeDataFile('drafts.json', unsaved);
   writeDataFile('library.json', library);
 
   return entry;
@@ -145,7 +161,7 @@ function curateEntry(entryId, categoryId) {
  * @returns {Object|null} Entry or null if not found
  */
 function getEntryById(entryId) {
-  const unsaved = readDataFile('unsaved.json');
+  const unsaved = readDataFile('drafts.json');
   // Try exact match first, then prefix match
   let entry = unsaved.entries.find(e => e.id === entryId || e.id.startsWith(entryId));
   if (entry) return { ...entry, location: 'unsaved' };
@@ -165,11 +181,11 @@ function getEntryById(entryId) {
  */
 function deleteEntry(entryId) {
   // Try unsaved first
-  const unsaved = readDataFile('unsaved.json');
+  const unsaved = readDataFile('drafts.json');
   const unsavedIndex = unsaved.entries.findIndex(e => e.id === entryId || e.id.startsWith(entryId));
   if (unsavedIndex !== -1) {
     unsaved.entries.splice(unsavedIndex, 1);
-    writeDataFile('unsaved.json', unsaved);
+    writeDataFile('drafts.json', unsaved);
     return true;
   }
 

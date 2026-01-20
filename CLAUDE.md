@@ -26,7 +26,7 @@ knowledgebase-cli/
     │   └── ai.js          # Token-efficient YAML for AI agents
     └── storage/       # Persistence layer
         ├── index.js       # Data directory, file I/O
-        ├── utils.js       # ID generation, thinking extraction
+        ├── utils.js       # ID generation, thinking extraction, git detection
         ├── entries.js     # Entry CRUD (drafts, library)
         └── categories.js  # Category CRUD
 ```
@@ -42,7 +42,7 @@ Task-oriented research modes defined in `src/profiles.json`:
 
 ### Storage
 Data stored in `~/.local/share/knowledgebase/` (override with `KBCLI_DATA_DIR`):
-- `unsaved.json` - Draft entries (auto-saved after each query)
+- `drafts.json` - Draft entries (auto-saved after each query)
 - `library.json` - Curated entries with categories
 - `categories.json` - Category definitions
 
@@ -71,10 +71,11 @@ kbcli library                    # List library
 kbcli library --category <id>    # Filter by category
 kbcli library show <id>          # View entry
 
-# Categories
+# Categories (all fields required for new)
 kbcli categories                 # List
-kbcli categories new <slug>      # Create
-kbcli categories rm <id>         # Delete
+kbcli categories new <slug> --short "..." --long "..." --ai "..." --rules "..." --example "..."
+kbcli categories update <slug>   # Update fields
+kbcli categories rm <slug>       # Delete
 
 # Info
 kbcli profiles                   # List profiles
@@ -147,7 +148,14 @@ Edit `src/profiles.json`:
   "profile": "code",
   "model": "sonar-reasoning-pro",
   "provider": "perplexity",
-  "scope": { "type": "repository", "path": "/path" },
+  "scope": {
+    "type": "repository",
+    "path": "/path/to/git/root",
+    "git": {
+      "remote": "git@github.com:user/repo.git",
+      "branch": "main"
+    }
+  },
   "title": "Generated title",
   "content": "Response with [n] refs",
   "thinking": "Reasoning or null",
@@ -158,6 +166,29 @@ Edit `src/profiles.json`:
   "curated_at": "ISO8601"
 }
 ```
+
+### Scope Types
+
+- `repository` - Inside a git repo (has `.git`), path is git root, includes git remote/branch
+- `folder` - Not in a git repo, just a folder path (no git info)
+- `global` - Set via `--general` flag during research (not auto-detected)
+
+## Category Schema
+
+```json
+{
+  "id": "p9njd",
+  "slug": "auth",
+  "short_desc": "Authentication patterns and security",
+  "long_desc": "OAuth flows, JWT handling, session management, and security best practices",
+  "ai_summary": "auth: oauth|jwt|session|security patterns for web apps",
+  "rules": "Apply when entry covers: login flows, token management, auth middleware",
+  "examples": ["OAuth 2.0 flow", "JWT refresh rotation", "Session security"],
+  "created_at": "ISO8601"
+}
+```
+
+All fields except `id` and `created_at` are required when creating a category. The `slug` is the user-facing identifier; `id` is internal only.
 
 ## Short IDs
 

@@ -133,7 +133,7 @@ kbcli --output json "your query"
 All data is stored in `~/.local/share/knowledgebase/`:
 
 - `categories.json` - Category definitions
-- `unsaved.json` - Draft research entries
+- `drafts.json` - Draft research entries
 - `library.json` - Curated library entries
 
 ## Profiles
