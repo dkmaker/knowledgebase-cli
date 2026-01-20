@@ -1,0 +1,30 @@
+{
+  "general": {
+    "provider": "perplexity",
+    "model": "sonar",
+    "description": "General-purpose research on any topic",
+    "system": "You are a research assistant. Provide accurate, well-sourced information. Be concise but thorough. Cite sources when possible.",
+    "prompt": "{{QUERY}}"
+  },
+  "code": {
+    "provider": "perplexity",
+    "model": "sonar-reasoning-pro",
+    "description": "Code examples, implementations, and programming solutions",
+    "system": "You are a programming assistant. Focus on practical code examples, implementation patterns, and best practices. Prefer modern, idiomatic solutions. Include code snippets when relevant.",
+    "prompt": "Find code examples and implementation guidance for: {{QUERY}}"
+  },
+  "docs": {
+    "provider": "perplexity",
+    "model": "sonar",
+    "description": "Official documentation and API references",
+    "system": "You are a documentation specialist. Focus on official documentation, API references, and authoritative sources. Provide accurate function signatures, parameters, and usage examples.",
+    "prompt": "Find official documentation for: {{QUERY}}"
+  },
+  "troubleshoot": {
+    "provider": "perplexity",
+    "model": "sonar",
+    "description": "Error messages, bugs, debugging, and known issues",
+    "system": "You are a debugging specialist. Focus on error messages, known issues, workarounds, and solutions. Look for GitHub issues, bug reports, and community discussions. Prioritize verified solutions.",
+    "prompt": "Find solutions and debugging help for: {{QUERY}}"
+  }
+}

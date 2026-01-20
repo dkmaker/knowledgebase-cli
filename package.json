@@ -1,0 +1,25 @@
+{
+  "name": "@dkmaker/knowledgebase-cli",
+  "version": "1.0.0",
+  "description": "Profile-based research interface with multiple provider support and knowledge management",
+  "main": "src/index.js",
+  "bin": {
+    "kbcli": "./src/index.js"
+  },
+  "scripts": {
+    "preinstall": "npx only-allow pnpm",
+    "start": "node src/index.js",
+    "test": "node --test"
+  },
+  "keywords": ["research", "perplexity", "search", "ai", "knowledge", "knowledgebase"],
+  "author": "Christian Pedersen <christian@dkmaker.xyz>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dkmaker/knowledgebase-cli.git"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "packageManager": "pnpm@10.28.1"
+}
