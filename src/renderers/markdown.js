@@ -1,7 +1,8 @@
 const { BaseRenderer } = require('./base');
+const { renderTable } = require('./table');
 
 /**
- * Markdown renderer - outputs markdown with YAML frontmatter
+ * Markdown renderer - outputs clean CLI formatting for humans
  */
 class MarkdownRenderer extends BaseRenderer {
   /**
@@ -33,6 +34,10 @@ class MarkdownRenderer extends BaseRenderer {
         return this.renderUpdateCategory();
       case 'entry':
         return this.renderEntry();
+      case 'update_entry':
+        return this.renderUpdateEntry();
+      case 'entry_history':
+        return this.renderEntryHistory();
       case 'delete':
         return this.renderDelete();
       case 'delete-category':
@@ -166,46 +171,22 @@ class MarkdownRenderer extends BaseRenderer {
    * Render entries list (unsaved or library)
    */
   renderEntries() {
-    const { title, count, entries } = this.data;
-    const parts = [];
+    const { title, count, entries, hiddenCount } = this.data;
+    const totalCount = count || entries?.length || 0;
 
-    parts.push(this.buildFrontmatter({
-      type: 'entries',
-      title,
-      count: count || entries?.length || 0
-    }));
-
-    if (!entries || entries.length === 0) {
-      parts.push(`No ${title.toLowerCase()} entries.`);
-      return parts.join('\n');
-    }
-
-    // Table header with metadata columns
-    parts.push('| ID | Profile | Title | Scope | Created | Meta |');
-    parts.push('|----|---------|-------|-------|---------|------|');
-
-    // Table rows
-    for (const entry of entries) {
-      const id = entry.id ? entry.id.slice(0, 8) : '-';
-      const profile = entry.profile || '-';
-      const entryTitle = (entry.title || entry.query || '-').slice(0, 40);
-
-      // Build scope display: prefer git remote (short form) over path
+    // Transform entries for table
+    const rows = (entries || []).map(entry => {
+      // Build scope display
       let scope;
       if (entry.scope?.type === 'global') {
-        scope = '[global]';
+        scope = 'global';
       } else if (entry.scope?.git?.remote) {
-        // Extract repo name from remote URL (e.g., "user/repo" from git@github.com:user/repo.git)
         const remote = entry.scope.git.remote;
         const match = remote.match(/[/:]([\w-]+\/[\w.-]+?)(?:\.git)?$/);
-        const repoName = match ? match[1] : remote;
-        const branch = entry.scope.git.branch ? `@${entry.scope.git.branch}` : '';
-        scope = `[${repoName}${branch}]`;
+        scope = 'git:' + (match ? match[1] : remote);
       } else {
-        scope = `[${entry.scope?.type || 'unknown'}:${entry.scope?.path || '-'}]`;
+        scope = entry.scope?.path || entry.scope?.type || '-';
       }
-
-      const created = entry.created_at ? entry.created_at.split('T')[0] : '-';
 
       // Build metadata string
       const metaParts = [];
@@ -214,87 +195,232 @@ class MarkdownRenderer extends BaseRenderer {
         if (entry.meta.examples > 0) metaParts.push(`${entry.meta.examples}e`);
         if (entry.meta.hasThinking) metaParts.push('t');
       }
-      const meta = metaParts.length > 0 ? metaParts.join(',') : '-';
 
-      parts.push(`| ${id} | ${profile} | ${entryTitle} | ${scope} | ${created} | ${meta} |`);
-    }
+      return {
+        id: entry.id ? entry.id.slice(0, 5) : '-',
+        profile: entry.profile || '-',
+        title: entry.title || entry.query || '-',
+        scope,
+        created: entry.created_at ? entry.created_at.split('T')[0] : '-',
+        meta: metaParts.length > 0 ? metaParts.join(',') : '-'
+      };
+    });
 
-    return parts.join('\n');
+    return renderTable({
+      title: `${title} (${totalCount})`,
+      columns: [
+        { key: 'id', label: 'ID', minWidth: 5, maxWidth: 5 },
+        { key: 'profile', label: 'Profile', minWidth: 8, maxWidth: 12 },
+        { key: 'title', label: 'Title', flex: true, minWidth: 20 },
+        { key: 'scope', label: 'Scope', minWidth: 10, maxWidth: 30 },
+        { key: 'created', label: 'Created', minWidth: 10, maxWidth: 10 },
+        { key: 'meta', label: 'Meta', minWidth: 4, maxWidth: 10 }
+      ],
+      rows,
+      emptyMessage: `No ${title.toLowerCase()} entries.`,
+      footer: hiddenCount > 0 ? `${hiddenCount} entries from other scopes hidden. Use --all to show everything.` : null
+    });
   }
 
   /**
-   * Render categories list (no frontmatter - informational)
+   * Render categories list
    */
   renderCategories() {
     const { categories } = this.data;
-    const parts = [];
 
-    if (!categories || categories.length === 0) {
-      parts.push('No categories defined. Create one with `kbcli categories new <slug>`');
-      return parts.join('\n');
-    }
+    const rows = (categories || []).map(cat => ({
+      slug: cat.slug,
+      short: cat.short_desc,
+      ai: cat.ai_summary,
+      examples: cat.examples ? cat.examples.slice(0, 2).join(', ') : '-'
+    }));
 
-    parts.push('## Categories\n');
-    for (const cat of categories) {
-      parts.push(`### ${cat.slug}`);
-      parts.push(`- **Short**: ${cat.short_desc}`);
-      parts.push(`- **Description**: ${cat.long_desc}`);
-      parts.push(`- **AI Summary**: ${cat.ai_summary}`);
-      parts.push(`- **Rules**: ${cat.rules}`);
-      if (cat.examples && cat.examples.length > 0) {
-        parts.push('- **Examples**:');
-        for (const ex of cat.examples) {
-          parts.push(`  - ${ex}`);
-        }
-      }
-      parts.push('');
-    }
-
-    return parts.join('\n');
+    return renderTable({
+      title: `Categories (${categories?.length || 0})`,
+      columns: [
+        { key: 'slug', label: 'Slug', minWidth: 8, maxWidth: 20 },
+        { key: 'short', label: 'Description', flex: true, minWidth: 20 },
+        { key: 'ai', label: 'AI Pattern', minWidth: 15, maxWidth: 40 },
+        { key: 'examples', label: 'Examples', minWidth: 15, maxWidth: 30 }
+      ],
+      rows,
+      emptyMessage: 'No categories defined. Create one with: kbcli categories new <slug>'
+    });
   }
 
   /**
-   * Render profiles list (no frontmatter - informational)
+   * Render profiles list
    */
   renderProfiles() {
     const { profiles, defaultProfile } = this.data;
-    const parts = [];
 
-    parts.push('## Available Profiles\n');
-    for (const profile of profiles || []) {
-      const marker = profile.name === defaultProfile ? ' (default)' : '';
-      parts.push(`### ${profile.name}${marker}`);
-      parts.push(profile.description);
-      parts.push('');
-    }
+    const rows = (profiles || []).map(p => ({
+      name: p.name === defaultProfile ? `${p.name} *` : p.name,
+      description: p.description
+    }));
 
-    return parts.join('\n');
+    return renderTable({
+      title: 'Profiles',
+      columns: [
+        { key: 'name', label: 'Name', minWidth: 12, maxWidth: 16 },
+        { key: 'description', label: 'Description', flex: true, minWidth: 30 }
+      ],
+      rows,
+      emptyMessage: 'No profiles defined.',
+      footer: '* = default profile'
+    });
   }
 
   /**
-   * Render providers list (no frontmatter - informational)
+   * Render providers list
    */
   renderProviders() {
     const { providers } = this.data;
-    const parts = [];
 
-    parts.push('## Available Providers\n');
-    for (const provider of providers || []) {
-      const status = provider.available ? '✓ configured' : `✗ missing ${provider.envKey}`;
-      parts.push(`### ${provider.displayName}`);
-      parts.push(`- **Name**: ${provider.name}`);
-      parts.push(`- **Status**: ${status}`);
-      parts.push('');
-    }
+    const rows = (providers || []).map(p => ({
+      name: p.name,
+      display: p.displayName,
+      status: p.available ? '✓ configured' : `✗ missing ${p.envKey}`
+    }));
 
-    return parts.join('\n');
+    return renderTable({
+      title: 'Providers',
+      columns: [
+        { key: 'name', label: 'Name', minWidth: 10, maxWidth: 15 },
+        { key: 'display', label: 'Provider', minWidth: 15, maxWidth: 25 },
+        { key: 'status', label: 'Status', flex: true, minWidth: 15 }
+      ],
+      rows,
+      emptyMessage: 'No providers available.'
+    });
   }
 
   /**
-   * Render help text (no frontmatter - just plain text)
+   * Render help text - supports both legacy (content) and new structured format
    */
   renderHelp() {
-    return this.data.content || '';
+    const { content, command, desc, usage, commands, actions, options, args, examples, terminology } = this.data;
+
+    // If legacy content field exists, use it
+    if (content && !commands && !actions) {
+      return content;
+    }
+
+    // Build human-readable help from structured data
+    const lines = [];
+
+    if (command && command !== 'kbcli') {
+      const cmdDesc = desc || this.getCommandDescription(command);
+      lines.push(`kbcli ${command} - ${cmdDesc}`);
+      lines.push('');
+    } else {
+      lines.push('kbcli - Knowledge base CLI with profile-based research');
+      lines.push('');
+    }
+
+    if (usage) {
+      lines.push('Usage:');
+      lines.push(`  ${usage}`);
+      lines.push('');
+    }
+
+    // Render arguments for specific commands
+    if (args && args.length > 0) {
+      lines.push('Arguments:');
+      for (const arg of args) {
+        const required = arg.required ? ' (required)' : '';
+        lines.push(`  <${arg.name}>${required}  ${arg.desc || ''}`);
+      }
+      lines.push('');
+    }
+
+    // Render commands (for root help)
+    if (commands && commands.length > 0) {
+      lines.push('Commands:');
+      for (const cmd of commands) {
+        const cmdArgs = cmd.args ? ` ${cmd.args}` : '';
+        const padded = (cmd.name + cmdArgs).padEnd(18);
+        lines.push(`  ${padded} ${cmd.desc || ''}`);
+      }
+      lines.push('');
+    }
+
+    // Render actions (for subcommand help)
+    if (actions && actions.length > 0) {
+      lines.push('Actions:');
+      for (const action of actions) {
+        const actionArgs = action.args ? ` ${action.args}` : '';
+        const padded = (action.name + actionArgs).padEnd(18);
+        lines.push(`  ${padded} ${action.desc || ''}`);
+      }
+      lines.push('');
+    }
+
+    // Render options
+    if (options) {
+      if (Array.isArray(options)) {
+        lines.push('Options:');
+        for (const opt of options) {
+          const arg = opt.arg ? ` ${opt.arg}` : '';
+          const vals = opt.values ? ` (${opt.values.join('|')})` : '';
+          const def = opt.default ? ` [default: ${opt.default}]` : '';
+          const req = opt.required ? ' (required)' : '';
+          const rep = opt.repeatable ? ' (repeatable)' : '';
+          const padded = (opt.flag + arg).padEnd(22);
+          lines.push(`  ${padded} ${opt.desc || ''}${vals}${def}${req}${rep}`);
+        }
+        lines.push('');
+      } else {
+        // Options grouped by action
+        for (const [actionName, actionOpts] of Object.entries(options)) {
+          lines.push(`${actionName.charAt(0).toUpperCase() + actionName.slice(1)} Options:`);
+          for (const opt of actionOpts) {
+            const arg = opt.arg ? ` ${opt.arg}` : '';
+            const vals = opt.values ? ` (${opt.values.join('|')})` : '';
+            const def = opt.default ? ` [default: ${opt.default}]` : '';
+            const req = opt.required ? ' (required)' : '';
+            const rep = opt.repeatable ? ' (repeatable)' : '';
+            const padded = (opt.flag + arg).padEnd(22);
+            lines.push(`  ${padded} ${opt.desc || ''}${vals}${def}${req}${rep}`);
+          }
+          lines.push('');
+        }
+      }
+    }
+
+    // Render examples
+    if (examples && examples.length > 0) {
+      lines.push('Examples:');
+      for (const ex of examples) {
+        lines.push(`  ${ex}`);
+      }
+      lines.push('');
+    }
+
+    // Render terminology (for root help)
+    if (terminology && Object.keys(terminology).length > 0) {
+      lines.push('Terminology:');
+      for (const [term, definition] of Object.entries(terminology)) {
+        lines.push(`  ${term.padEnd(10)} ${definition}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Get command description for help header
+   */
+  getCommandDescription(command) {
+    const descriptions = {
+      research: 'Create a research entry',
+      drafts: 'Manage uncategorized research entries',
+      library: 'Manage curated library entries',
+      categories: 'Manage categories',
+      profiles: 'View available search profiles',
+      providers: 'View available API providers'
+    };
+    return descriptions[command] || '';
   }
 
   /**
@@ -394,7 +520,6 @@ class MarkdownRenderer extends BaseRenderer {
     if (entry.scope) frontmatter.scope = entry.scope.type;
     if (entry.scope?.path) frontmatter.path = entry.scope.path;
     if (entry.scope?.git?.remote) frontmatter.git_remote = entry.scope.git.remote;
-    if (entry.scope?.git?.branch) frontmatter.git_branch = entry.scope.git.branch;
 
     // Check if viewing specific sections
     const viewingSpecificSections = showThinking || showSources || showExamples;
@@ -503,8 +628,81 @@ class MarkdownRenderer extends BaseRenderer {
   /**
    * Render error (no frontmatter - just error message)
    */
+  /**
+   * Render error - supports both legacy and structured format
+   */
   renderError() {
-    return `Error: ${this.data.message || 'An unknown error occurred'}`;
+    const { message, commands, suggestions } = this.data;
+    const lines = [];
+
+    lines.push(`Error: ${message || 'An unknown error occurred'}`);
+
+    // Structured error with commands and suggestions
+    if (commands && commands.length > 0) {
+      lines.push('');
+      lines.push(`Available commands: ${commands.join(', ')}`);
+    }
+
+    if (suggestions && suggestions.length > 0) {
+      lines.push('');
+      lines.push('Suggestions:');
+      for (const sug of suggestions) {
+        if (typeof sug === 'string') {
+          lines.push(`  ${sug}`);
+        } else {
+          lines.push(`  ${sug.cmd}`);
+          if (sug.desc) lines.push(`    ${sug.desc}`);
+        }
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Render update confirmation
+   */
+  renderUpdateEntry() {
+    const { entry, action } = this.data;
+    const actionLabels = {
+      update_fields: 'Updated entry',
+      add_source: 'Added source to entry',
+      update_source: 'Updated source in entry',
+      remove_source: 'Removed source from entry',
+      add_example: 'Added example to entry',
+      update_example: 'Updated example in entry',
+      remove_example: 'Removed example from entry'
+    };
+
+    return `✓ ${actionLabels[action] || 'Updated entry'}: ${entry.id}
+
+Title: ${entry.title}
+Updated: ${entry.updated_at}
+Sources: ${entry.sources.length}
+Examples: ${entry.examples.length}
+`;
+  }
+
+  /**
+   * Render entry version history
+   */
+  renderEntryHistory() {
+    const { history, entryId } = this.data;
+
+    let output = `# Version History: ${entryId}\n\n`;
+    output += `Total versions: ${history.length}\n\n`;
+
+    // Show history in reverse (newest first)
+    for (let i = history.length - 1; i >= 0; i--) {
+      const version = history[i];
+      output += `## Version ${i + 1}\n`;
+      output += `Archived: ${version.archived_at}\n`;
+      output += `Title: ${version.title}\n`;
+      output += `Sources: ${version.sources?.length || 0}\n`;
+      output += `Examples: ${version.examples?.length || 0}\n\n`;
+    }
+
+    return output;
   }
 
   /**

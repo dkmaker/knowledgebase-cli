@@ -97,25 +97,8 @@ function getGitRemote(gitRoot) {
 }
 
 /**
- * Get the current git branch name.
- * @param {string} gitRoot - Git repository root path
- * @returns {string|null} Branch name or null if detached/error
- */
-function getGitBranch(gitRoot) {
-  try {
-    const result = execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd: gitRoot,
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    return result.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Detect scope information for the current working directory.
+ * Scope is tied to the repository (by remote URL), not the branch.
  * @param {string} cwd - Current working directory
  * @returns {Object} Scope object with type, path, and optional git info
  */
@@ -130,8 +113,7 @@ function detectScope(cwd) {
     type: 'repository',
     path: gitRoot,
     git: {
-      remote: getGitRemote(gitRoot),
-      branch: getGitBranch(gitRoot)
+      remote: getGitRemote(gitRoot)
     }
   };
 }
@@ -141,6 +123,5 @@ module.exports = {
   stripThinking,
   findGitRoot,
   getGitRemote,
-  getGitBranch,
   detectScope
 };

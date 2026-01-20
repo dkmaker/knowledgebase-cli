@@ -5,9 +5,10 @@ const fs = require('fs');
 const { getProvider, listProviders } = require('./providers');
 const profiles = require('./profiles.json');
 const { initStorage } = require('./storage');
-const { createEntry, saveEntry, getUnsavedEntries, getLibraryEntries, curateEntry, getEntryById, deleteEntry } = require('./storage/entries');
+const { createEntry, saveEntry, getUnsavedEntries, getLibraryEntries, curateEntry, getEntryById, deleteEntry, updateEntry, addEntrySource, updateEntrySource, removeEntrySource, addEntryExample, updateEntryExample, removeEntryExample, getEntryHistory, getEntryVersion } = require('./storage/entries');
 const { createCategory, getCategories, getCategoryById, getCategoryBySlug, updateCategory, deleteCategory } = require('./storage/categories');
 const { getRenderer } = require('./renderers');
+const { parseCommand, generateRootHelp, generateCommandHelp, generateError } = require('./commands');
 
 /**
  * Detect how the CLI was invoked
@@ -87,430 +88,187 @@ function detectCliCommand() {
 // Detect how the CLI was invoked
 const CLI_COMMAND = detectCliCommand();
 
-// Known subcommands
-const SUBCOMMANDS = ['drafts', 'library', 'categories', 'profiles', 'providers', 'help'];
-// Known actions within subcommands
-const ACTIONS = ['show', 'save', 'rm', 'new', 'update'];
-
 /**
- * Parse command line arguments with subcommand support
+ * Parse command line arguments using the command registry.
+ * This is a compatibility layer that converts registry-based parsing to legacy format.
  * @param {string[]} args - Process arguments (without node and script)
- * @returns {Object} Parsed options
+ * @returns {Object} Parsed options in legacy format
  */
 function parseArgs(args) {
   const defaultOutput = process.env.CLAUDECODE === '1' ? 'ai' : 'md';
 
+  // Use the new registry-based parser
+  const parsed = parseCommand(args);
+
+  // Build legacy result format
   const result = {
     // Subcommand info
-    subcommand: null,
-    action: null,
-    actionArg: null,
+    subcommand: parsed.command,
+    action: parsed.action,
+    actionArg: parsed.positionals[0] || null,
+    actionArg2: parsed.positionals[1] || null,
 
     // Global options
-    output: defaultOutput,
-    help: false,
+    output: parsed.output || defaultOutput,
+    help: parsed.help,
 
     // Search options
-    profile: 'general',
+    profile: parsed.values.profile || parsed.values.p || 'general',
     query: null,
-    showThinking: false,
+    showThinking: parsed.values.thinking || false,
     searchOptions: {},
 
     // Subcommand options
-    local: false,
-    category: null,
-    to: null,
-    global: false,
+    local: parsed.values.local || false,
+    all: parsed.values.all || false,
+    category: parsed.values.category || null,
+    to: parsed.values.to || null,
+    global: parsed.values.global || false,
 
     // Category options
-    short: null,
-    long: null,
-    ai: null,
-    rules: null,
-    examples: [],
+    short: parsed.values.short || null,
+    long: parsed.values.long || null,
+    ai: parsed.values.ai || null,
+    rules: parsed.values.rules || null,
+    examples: parsed.values.example || [],
 
     // Show options
-    showSources: false,
-    showExamples: false
+    showSources: parsed.values.sources || false,
+    showExamples: parsed.values.examples || false,
+
+    // Update options
+    title: parsed.values.title,
+    content: parsed.values.content,
+    thinking: parsed.values.thinking,
+    sources: undefined,
+    addSource: undefined,
+    updateSourceIndex: undefined,
+    updateSourceData: undefined,
+    removeSourceIndex: undefined,
+    addExample: undefined,
+    updateExampleIndex: undefined,
+    updateExampleData: undefined,
+    removeExampleIndex: undefined,
+
+    // History options
+    version: parsed.values.version ? parseInt(parsed.values.version, 10) : null,
+
+    // Error from parser
+    _parseError: parsed.error
   };
 
-  let i = 0;
-
-  // First pass: detect subcommand
-  while (i < args.length) {
-    const arg = args[i];
-
-    if (!arg.startsWith('-')) {
-      if (SUBCOMMANDS.includes(arg)) {
-        result.subcommand = arg;
-        i++;
-        break;
-      } else if (arg === 'help') {
-        result.help = true;
-        i++;
-        break;
-      } else {
-        // Not a subcommand, must be start of query
-        break;
-      }
-    }
-
-    // Handle global options before subcommand
-    if (arg === '--output' || arg === '-o') {
-      result.output = args[++i];
-    } else if (arg === '--profile' || arg === '-p') {
-      result.profile = args[++i];
-    } else if (arg === '--help' || arg === '-h') {
-      result.help = true;
-    }
-    i++;
+  // Handle research command - query is the positionals
+  if (parsed.command === 'research') {
+    result.query = parsed.positionals.join(' ') || null;
   }
 
-  // Second pass: parse subcommand-specific args
-  while (i < args.length) {
-    const arg = args[i];
+  // Handle search options
+  if (parsed.values.model || parsed.values.m) {
+    result.searchOptions.model = parsed.values.model || parsed.values.m;
+  }
+  if (parsed.values.recency) {
+    result.searchOptions.search_recency_filter = parsed.values.recency;
+  }
+  if (parsed.values.domains) {
+    result.searchOptions.search_domain_filter = parsed.values.domains.split(',');
+  }
+  if (parsed.values.maxTokens) {
+    result.searchOptions.max_tokens = parseInt(parsed.values.maxTokens, 10);
+  }
 
-    // Actions (show, save, rm, new)
-    if (!arg.startsWith('-') && ACTIONS.includes(arg) && !result.action) {
-      result.action = arg;
-      // Next non-flag arg is the action argument (id or slug)
-      if (i + 1 < args.length && !args[i + 1].startsWith('-')) {
-        result.actionArg = args[++i];
-      }
-      i++;
-      continue;
+  // Handle JSON parsing for update options
+  if (parsed.values.addSource) {
+    try {
+      result.addSource = JSON.parse(parsed.values.addSource);
+    } catch (e) {
+      result.addSource = parsed.values.addSource;
     }
-
-    // Options
-    if (arg === '--output' || arg === '-o') {
-      result.output = args[++i];
-    } else if (arg === '--help' || arg === '-h') {
-      result.help = true;
-    } else if (arg === '--profile' || arg === '-p') {
-      result.profile = args[++i];
-    } else if (arg === '--local') {
-      result.local = true;
-    } else if (arg === '--global') {
-      result.global = true;
-    } else if (arg === '--category') {
-      result.category = args[++i];
-    } else if (arg === '--to') {
-      result.to = args[++i];
-    } else if (arg === '--short') {
-      result.short = args[++i];
-    } else if (arg === '--long') {
-      result.long = args[++i];
-    } else if (arg === '--ai') {
-      result.ai = args[++i];
-    } else if (arg === '--rules') {
-      result.rules = args[++i];
-    } else if (arg === '--example') {
-      result.examples.push(args[++i]);
-    } else if (arg === '--show-thinking' || arg === '--thinking') {
-      result.showThinking = true;
-    } else if (arg === '--sources') {
-      result.showSources = true;
-    } else if (arg === '--examples') {
-      result.showExamples = true;
-    } else if (arg === '--model' || arg === '-m') {
-      result.searchOptions.model = args[++i];
-    } else if (arg === '--recency') {
-      result.searchOptions.search_recency_filter = args[++i];
-    } else if (arg === '--domains') {
-      result.searchOptions.search_domain_filter = args[++i].split(',');
-    } else if (arg === '--max-tokens') {
-      result.searchOptions.max_tokens = parseInt(args[++i], 10);
-    } else if (!arg.startsWith('-')) {
-      // Collect remaining args as query (for search)
-      result.query = args.slice(i).join(' ');
-      break;
+  }
+  if (parsed.values.removeSource) {
+    result.removeSourceIndex = parseInt(parsed.values.removeSource, 10);
+  }
+  if (parsed.values.addExample) {
+    try {
+      result.addExample = JSON.parse(parsed.values.addExample);
+    } catch (e) {
+      result.addExample = parsed.values.addExample;
     }
-    i++;
+  }
+  if (parsed.values.removeExample) {
+    result.removeExampleIndex = parseInt(parsed.values.removeExample, 10);
   }
 
   return result;
 }
 
 // ============================================================================
-// Help Data
+// Help Data - Using command registry for context-aware output
 // ============================================================================
 
+/**
+ * Get the output mode based on CLAUDECODE environment variable
+ * @returns {string} 'ai' or 'human'
+ */
+function getOutputMode() {
+  return process.env.CLAUDECODE === '1' ? 'ai' : 'human';
+}
+
+/**
+ * Get root help data from command registry
+ * @param {boolean} compact - If true, use AI mode (for backward compatibility)
+ * @returns {Object} Help data structure
+ */
 function getRootHelpData(compact = false) {
-  if (compact) {
-    return {
-      type: 'help',
-      content: `kbcli [opts] <query> | kbcli <cmd> [opts]
-
-Commands: drafts, library, categories, profiles, providers
-
-Options:
-  -o <fmt>  Output: md|json|ai
-  -p <name> Profile: general|code|docs|troubleshoot
-  -h        Help
-
-Example: kbcli -p code "React hooks"`
-    };
-  }
-
-  return {
-    type: 'help',
-    content: `kbcli - Knowledge base CLI with profile-based research
-
-Usage:
-  kbcli [options] <query>          Execute search
-  kbcli <command> [options]        Manage entries
-
-Commands:
-  drafts        Manage uncategorized research entries
-  library       Manage curated library entries
-  categories    Manage categories
-  profiles      View available search profiles
-  providers     View available API providers
-
-Global Options:
-  --output, -o <fmt>    Output format: md, json, ai
-  --profile, -p <name>  Profile: general, code, docs, troubleshoot
-  --help, -h            Show help
-
-Run 'kbcli <command> --help' for command-specific help.
-
-Examples:
-  kbcli "What is quantum computing?"
-  kbcli --profile code "React hooks"
-  kbcli drafts
-  kbcli drafts show abc123
-  kbcli library --category algorithms`
-  };
+  const mode = compact ? 'ai' : getOutputMode();
+  return generateRootHelp(mode);
 }
 
-function getSearchHelpData(compact = false) {
-  if (compact) {
-    return {
-      type: 'help',
-      content: `kbcli [opts] <query>
-
-Options:
-  -p <name>       Profile: general|code|docs|troubleshoot (default: general)
-  -m <model>      Override model
-  --recency <p>   Filter: day|week|month|year
-  --domains <l>   Domain filter (comma-separated)
-  --max-tokens <n>
-  --thinking      Show reasoning
-  -o <fmt>        Output: md|json|ai
-
-Example: kbcli -p code "React hooks"`
-    };
-  }
-
-  return {
-    type: 'help',
-    content: `kbcli <query> - Execute a search
-
-Usage:
-  kbcli [options] <query>
-
-Options:
-  --profile, -p <name>  Use profile: general, code, docs, troubleshoot (default: general)
-  --model, -m <model>   Override model from profile
-  --recency <period>    Filter: day, week, month, year
-  --domains <list>      Comma-separated domain filter
-  --max-tokens <n>      Maximum response tokens
-  --show-thinking       Display reasoning process
-  --output, -o <fmt>    Output format: md, json, ai
-
-Examples:
-  kbcli "What is quantum computing?"
-  kbcli --profile code "React hooks examples"
-  kbcli --profile troubleshoot --recency week "ECONNREFUSED"`
-  };
+/**
+ * Get research command help from registry
+ */
+function getResearchHelpData(compact = false) {
+  const mode = compact ? 'ai' : getOutputMode();
+  return generateCommandHelp('research', mode);
 }
 
+/**
+ * Get drafts command help from registry
+ */
 function getDraftsHelpData(compact = false) {
-  if (compact) {
-    return {
-      type: 'help',
-      content: `kbcli drafts [opts] | show <id> | save <id> --to <cat> | rm <id>
-
-Options:
-  --local      Filter to current repo
-  --thinking   Include reasoning
-  --sources    Include citations
-  --examples   Include code examples
-  --to <cat>   Target category (save)
-  --global     Save as global`
-    };
-  }
-
-  return {
-    type: 'help',
-    content: `kbcli drafts - Manage uncategorized research entries
-
-Usage:
-  kbcli drafts [options]           List drafts
-  kbcli drafts show <id> [opts]    View entry content
-  kbcli drafts save <id> [opts]    Save to library
-  kbcli drafts rm <id>             Delete entry
-
-List Options:
-  --local               Filter to current repository only
-
-Show Options:
-  --thinking            Include thinking/reasoning process
-  --sources             Include source citations
-  --examples            Include code examples
-
-Save Options:
-  --to <category>       Target category (required)
-  --global              Save as global (not repo-bound)
-
-Examples:
-  kbcli drafts
-  kbcli drafts --local
-  kbcli drafts show abc123
-  kbcli drafts show abc123 --thinking --sources
-  kbcli drafts save abc123 --to algorithms
-  kbcli drafts rm abc123`
-  };
+  const mode = compact ? 'ai' : getOutputMode();
+  return generateCommandHelp('drafts', mode);
 }
 
+/**
+ * Get library command help from registry
+ */
 function getLibraryHelpData(compact = false) {
-  if (compact) {
-    return {
-      type: 'help',
-      content: `kbcli library [opts] | show <id> | rm <id>
-
-Options:
-  --local        Filter to current repo
-  --category <id> Filter by category
-  --thinking     Include reasoning
-  --sources      Include citations
-  --examples     Include code examples`
-    };
-  }
-
-  return {
-    type: 'help',
-    content: `kbcli library - Manage curated library entries
-
-Usage:
-  kbcli library [options]          List library entries
-  kbcli library show <id> [opts]   View entry content
-  kbcli library rm <id>            Delete entry
-
-List Options:
-  --local               Filter to current repository only
-  --category <id>       Filter by category
-
-Show Options:
-  --thinking            Include thinking/reasoning process
-  --sources             Include source citations
-  --examples            Include code examples
-
-Examples:
-  kbcli library
-  kbcli library --category react
-  kbcli library --local
-  kbcli library show abc123
-  kbcli library show abc123 --sources --examples
-  kbcli library rm abc123`
-  };
+  const mode = compact ? 'ai' : getOutputMode();
+  return generateCommandHelp('library', mode);
 }
 
+/**
+ * Get categories command help from registry
+ */
 function getCategoriesHelpData(compact = false) {
-  if (compact) {
-    return {
-      type: 'help',
-      content: `kbcli categories | new <slug> | update <slug> | rm <slug>
-
-New (all required):
-  --short <text>   Short description
-  --long <text>    Long description
-  --ai <text>      AI summary
-  --rules <text>   When to apply
-  --example <text> Example (repeatable)
-
-Update: --short|--long|--ai|--rules|--example`
-    };
-  }
-
-  return {
-    type: 'help',
-    content: `kbcli categories - Manage categories
-
-Usage:
-  kbcli categories                   List all categories
-  kbcli categories new <slug>        Create new category (all fields required)
-  kbcli categories update <slug>     Update category fields
-  kbcli categories rm <slug>         Delete category
-
-New Options (all required):
-  --short <text>        Short description (1-line)
-  --long <text>         Long description (detailed)
-  --ai <text>           AI-optimized summary
-  --rules <text>        When to apply this category
-  --example <text>      Example content (repeat for multiple)
-
-Update Options (any combination):
-  --short <text>        Update short description
-  --long <text>         Update long description
-  --ai <text>           Update AI summary
-  --rules <text>        Update rules
-  --example <text>      Replace examples (repeat for multiple)
-
-Examples:
-  kbcli categories new auth \\
-    --short "Authentication patterns" \\
-    --long "OAuth, JWT, session management" \\
-    --ai "auth: oauth|jwt|session patterns" \\
-    --rules "Apply for login, tokens, auth middleware" \\
-    --example "OAuth 2.0 flow" \\
-    --example "JWT refresh rotation"
-
-  kbcli categories update auth --short "Updated description"
-  kbcli categories rm auth`
-  };
+  const mode = compact ? 'ai' : getOutputMode();
+  return generateCommandHelp('categories', mode);
 }
 
+/**
+ * Get profiles command help from registry
+ */
 function getProfilesHelpData(compact = false) {
-  if (compact) {
-    return {
-      type: 'help',
-      content: `Profiles: general (default), code, docs, troubleshoot`
-    };
-  }
-
-  return {
-    type: 'help',
-    content: `kbcli profiles - View available search profiles
-
-Usage:
-  kbcli profiles
-
-Profiles:
-  general       General-purpose research (default)
-  code          Code examples and implementations
-  docs          Official documentation and API references
-  troubleshoot  Errors, bugs, and debugging solutions`
-  };
+  const mode = compact ? 'ai' : getOutputMode();
+  return generateCommandHelp('profiles', mode);
 }
 
+/**
+ * Get providers command help from registry
+ */
 function getProvidersHelpData(compact = false) {
-  if (compact) {
-    return {
-      type: 'help',
-      content: `Lists configured API providers`
-    };
-  }
-
-  return {
-    type: 'help',
-    content: `kbcli providers - View available API providers
-
-Usage:
-  kbcli providers
-
-Shows configured API providers and their status.`
-  };
+  const mode = compact ? 'ai' : getOutputMode();
+  return generateCommandHelp('providers', mode);
 }
 
 // ============================================================================
@@ -546,7 +304,7 @@ function getCategoriesData() {
   };
 }
 
-function getEntriesData(entries, title) {
+function getEntriesData(entries, title, options = {}) {
   // Add metadata counts to each entry
   const enrichedEntries = entries.map(entry => ({
     ...entry,
@@ -557,10 +315,21 @@ function getEntriesData(entries, title) {
     }
   }));
 
+  // Calculate hidden count if filtering is active
+  let hiddenCount = 0;
+  if (!options.all && !options.local) {
+    // Get total entries to calculate hidden
+    const allEntries = title === 'Drafts'
+      ? getUnsavedEntries({ all: true })
+      : getLibraryEntries({ all: true, categoryId: options.categoryId });
+    hiddenCount = allEntries.length - entries.length;
+  }
+
   return {
     type: 'entries',
     title,
     count: entries.length,
+    hiddenCount,
     entries: enrichedEntries
   };
 }
@@ -636,6 +405,124 @@ function handleRm(entryId, location) {
   }
 
   return { type: 'delete', success: true, entry };
+}
+
+function handleUpdateEntry(entryId, location, args) {
+  if (!entryId) {
+    return { type: 'error', message: 'Entry ID required for update' };
+  }
+
+  const options = { location };
+
+  try {
+    // Handle granular array operations first
+    if (args.addSource) {
+      const result = addEntrySource(entryId, args.addSource, options);
+      if (!result) {
+        return { type: 'error', message: `Entry ${entryId} not found in ${location}` };
+      }
+      return { type: 'update_entry', entry: result, action: 'add_source' };
+    }
+
+    if (args.updateSourceIndex !== undefined) {
+      const result = updateEntrySource(entryId, args.updateSourceIndex, args.updateSourceData, options);
+      if (!result) {
+        return { type: 'error', message: `Entry or source not found` };
+      }
+      return { type: 'update_entry', entry: result, action: 'update_source' };
+    }
+
+    if (args.removeSourceIndex !== undefined) {
+      const result = removeEntrySource(entryId, args.removeSourceIndex, options);
+      if (!result) {
+        return { type: 'error', message: `Entry not found` };
+      }
+      return { type: 'update_entry', entry: result, action: 'remove_source' };
+    }
+
+    if (args.addExample) {
+      const result = addEntryExample(entryId, args.addExample, options);
+      if (!result) {
+        return { type: 'error', message: `Entry ${entryId} not found in ${location}` };
+      }
+      return { type: 'update_entry', entry: result, action: 'add_example' };
+    }
+
+    if (args.updateExampleIndex !== undefined) {
+      const result = updateEntryExample(entryId, args.updateExampleIndex, args.updateExampleData, options);
+      if (!result) {
+        return { type: 'error', message: `Entry or example not found` };
+      }
+      return { type: 'update_entry', entry: result, action: 'update_example' };
+    }
+
+    if (args.removeExampleIndex !== undefined) {
+      const result = removeEntryExample(entryId, args.removeExampleIndex, options);
+      if (!result) {
+        return { type: 'error', message: `Entry not found` };
+      }
+      return { type: 'update_entry', entry: result, action: 'remove_example' };
+    }
+
+    // Build updates object for text fields and wholesale arrays
+    const updates = {};
+    if (args.title !== undefined) updates.title = args.title;
+    if (args.content !== undefined) updates.content = args.content;
+    if (args.thinking !== undefined) updates.thinking = args.thinking;
+    if (args.sources !== undefined) updates.sources = args.sources;
+    // Only include examples if it's not the default empty array (examples is used for categories too)
+    if (args.examples !== undefined && args.examples.length > 0 && typeof args.examples[0] === 'object') {
+      updates.examples = args.examples;
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return { type: 'error', message: 'No fields specified for update' };
+    }
+
+    const result = updateEntry(entryId, updates, options);
+    if (!result) {
+      return { type: 'error', message: `Entry ${entryId} not found in ${location}` };
+    }
+
+    return { type: 'update_entry', entry: result, action: 'update_fields' };
+  } catch (error) {
+    return { type: 'error', message: `Update failed: ${error.message}` };
+  }
+}
+
+function handleEntryHistory(entryId, location, versionNumber = null, options = {}) {
+  if (!entryId) {
+    return { type: 'error', message: 'Entry ID required for history' };
+  }
+
+  // If version number specified, show that specific version
+  if (versionNumber !== null) {
+    const version = getEntryVersion(entryId, versionNumber, { location });
+    if (!version) {
+      return { type: 'error', message: `Version ${versionNumber} not found for entry ${entryId}` };
+    }
+
+    // Return as a regular entry view but mark it as historical
+    return {
+      type: 'entry',
+      entry: { ...version, location },
+      isHistorical: true,
+      versionNumber,
+      showThinking: options.showThinking || false,
+      showSources: options.showSources || false,
+      showExamples: options.showExamples || false,
+      cliCommand: CLI_COMMAND
+    };
+  }
+
+  // Otherwise show history list
+  const history = getEntryHistory(entryId, { location });
+
+  if (history.length === 0) {
+    return { type: 'error', message: `No history found for entry ${entryId}` };
+  }
+
+  return { type: 'entry_history', history, entryId };
 }
 
 function handleNewCategory(slug, options) {
@@ -721,7 +608,7 @@ function handleRmCategory(slug) {
   return { type: 'delete-category', success: true, category };
 }
 
-async function executeSearch(args) {
+async function executeSearch(args, outputMode) {
   const profile = profiles[args.profile];
   if (!profile) {
     return {
@@ -747,6 +634,15 @@ async function executeSearch(args) {
     model: args.searchOptions.model || profile.model,
     ...args.searchOptions
   };
+
+  // Immediate feedback - print to stderr so it doesn't interfere with output
+  const model = options.model || profile.model;
+  if (outputMode === 'ai') {
+    process.stderr.write(`---\ntype: status\nstatus: researching\nquery: ${args.query}\nprofile: ${args.profile}\nmodel: ${model}\n---\n`);
+  } else {
+    process.stderr.write(`Researching: "${args.query}"\n`);
+    process.stderr.write(`Profile: ${args.profile} | Model: ${model}\n\n`);
+  }
 
   const provider = new Provider(options);
   const result = await provider.ask(args.query, options);
@@ -795,10 +691,19 @@ async function main() {
           });
         } else if (args.action === 'save') {
           data = handleSave(args.actionArg, args.to, args.global);
+        } else if (args.action === 'update') {
+          data = handleUpdateEntry(args.actionArg, 'drafts', args);
+        } else if (args.action === 'history') {
+          data = handleEntryHistory(args.actionArg, 'drafts', args.version, {
+            showThinking: args.showThinking,
+            showSources: args.showSources,
+            showExamples: args.showExamples
+          });
         } else if (args.action === 'rm') {
           data = handleRm(args.actionArg, 'unsaved');
         } else {
-          data = getEntriesData(getUnsavedEntries({ local: args.local }), 'Drafts');
+          const opts = { local: args.local, all: args.all };
+          data = getEntriesData(getUnsavedEntries(opts), 'Drafts', opts);
         }
         break;
 
@@ -811,10 +716,29 @@ async function main() {
             showSources: args.showSources,
             showExamples: args.showExamples
           });
+        } else if (args.action === 'update') {
+          data = handleUpdateEntry(args.actionArg, 'library', args);
+        } else if (args.action === 'history') {
+          data = handleEntryHistory(args.actionArg, 'library', args.version, {
+            showThinking: args.showThinking,
+            showSources: args.showSources,
+            showExamples: args.showExamples
+          });
         } else if (args.action === 'rm') {
           data = handleRm(args.actionArg, 'library');
         } else {
-          data = getEntriesData(getLibraryEntries({ categoryId: args.category, local: args.local }), 'Library');
+          // Resolve category slug to ID if provided
+          let categoryId = null;
+          if (args.category) {
+            const cat = getCategoryBySlug(args.category);
+            if (!cat) {
+              data = { type: 'error', message: `Category not found: ${args.category}` };
+              break;
+            }
+            categoryId = cat.id;
+          }
+          const opts = { categoryId, local: args.local, all: args.all };
+          data = getEntriesData(getLibraryEntries(opts), 'Library', opts);
         }
         break;
 
@@ -860,12 +784,28 @@ async function main() {
         }
         break;
 
-      default:
-        // No subcommand - either help or search
+      case 'research':
         if (args.help) {
-          data = args.query ? getSearchHelpData(compact) : getRootHelpData(compact);
-        } else if (args.query) {
-          data = await executeSearch(args);
+          data = getResearchHelpData(compact);
+        } else if (!args.query) {
+          data = { type: 'error', message: 'Research topic required.\n\nUsage: kbcli research "your question"\n       kbcli r -p code "React hooks"' };
+        } else {
+          data = await executeSearch(args, args.output);
+        }
+        break;
+
+      default:
+        // No subcommand - show help or error on unknown command
+        if (args.help) {
+          data = getRootHelpData(compact);
+        } else if (args._parseError && args._parseError.type === 'unknown_command') {
+          // Use registry-based error with context-aware output
+          const mode = compact ? 'ai' : getOutputMode();
+          data = generateError(
+            `Unknown command: ${args._parseError.value}`,
+            mode,
+            { unknownCommand: args._parseError.value }
+          );
         } else {
           data = getRootHelpData(compact);
         }

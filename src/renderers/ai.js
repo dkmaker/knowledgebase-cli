@@ -34,6 +34,10 @@ class AiRenderer extends BaseRenderer {
         return this.renderUpdateCategory();
       case 'entry':
         return this.renderEntry();
+      case 'update_entry':
+        return this.renderUpdateEntry();
+      case 'entry_history':
+        return this.renderEntryHistory();
       case 'delete':
         return this.renderDelete();
       case 'delete-category':
@@ -115,12 +119,18 @@ class AiRenderer extends BaseRenderer {
    * Render entries list
    */
   renderEntries() {
-    const { title, count, entries } = this.data;
+    const { title, count, entries, hiddenCount } = this.data;
     const lines = [];
 
     lines.push('type: entries');
     lines.push(`title: ${title}`);
     lines.push(`count: ${count || entries?.length || 0}`);
+
+    // Add hint about hidden entries
+    if (hiddenCount > 0) {
+      lines.push(`hidden: ${hiddenCount}`);
+      lines.push(`show_all: kbcli ${title.toLowerCase()} --all`);
+    }
 
     if (!entries || entries.length === 0) {
       return lines.join('\n');
@@ -134,7 +144,6 @@ class AiRenderer extends BaseRenderer {
       lines.push(`  scope: ${entry.scope?.type || 'unknown'}`);
       if (entry.scope?.path) lines.push(`  path: ${entry.scope.path}`);
       if (entry.scope?.git?.remote) lines.push(`  git_remote: ${entry.scope.git.remote}`);
-      if (entry.scope?.git?.branch) lines.push(`  git_branch: ${entry.scope.git.branch}`);
       lines.push(`  created: ${entry.created_at ? entry.created_at.split('T')[0] : '-'}`);
 
       // Metadata counts
@@ -221,16 +230,104 @@ class AiRenderer extends BaseRenderer {
   }
 
   /**
-   * Render help text
+   * Render help text - supports both legacy (content) and new structured format
    */
   renderHelp() {
-    const { content } = this.data;
+    const { content, command, desc, usage, commands, actions, options, args, examples, terminology } = this.data;
     const lines = [];
 
     lines.push('type: help');
-    lines.push('content: |');
-    for (const line of (content || '').split('\n')) {
-      lines.push(`  ${line}`);
+
+    // If legacy content field exists, use it
+    if (content && !commands && !actions) {
+      lines.push('content: |');
+      for (const line of content.split('\n')) {
+        lines.push(`  ${line}`);
+      }
+      return lines.join('\n');
+    }
+
+    // New structured format
+    if (command) lines.push(`command: ${command}`);
+    if (desc) lines.push(`desc: ${desc}`);
+    if (usage) lines.push(`usage: ${usage}`);
+
+    // Render arguments
+    if (args && args.length > 0) {
+      lines.push('args:');
+      for (const arg of args) {
+        lines.push(`  - name: ${arg.name}`);
+        if (arg.required) lines.push(`    required: true`);
+        if (arg.desc) lines.push(`    desc: ${arg.desc}`);
+      }
+    }
+
+    // Render commands (for root help)
+    if (commands && commands.length > 0) {
+      lines.push('commands:');
+      for (const cmd of commands) {
+        lines.push(`  - name: ${cmd.name}`);
+        if (cmd.args) lines.push(`    args: "${cmd.args}"`);
+        if (cmd.desc) lines.push(`    desc: ${cmd.desc}`);
+      }
+    }
+
+    // Render actions (for subcommand help)
+    if (actions && actions.length > 0) {
+      lines.push('actions:');
+      for (const action of actions) {
+        lines.push(`  - name: ${action.name}`);
+        if (action.args) lines.push(`    args: "${action.args}"`);
+        if (action.desc) lines.push(`    desc: ${action.desc}`);
+      }
+    }
+
+    // Render options
+    if (options) {
+      if (Array.isArray(options)) {
+        // Simple options array
+        lines.push('options:');
+        for (const opt of options) {
+          lines.push(`  - flag: "${opt.flag}"`);
+          if (opt.arg) lines.push(`    arg: "${opt.arg}"`);
+          if (opt.values) lines.push(`    values: [${opt.values.join(', ')}]`);
+          if (opt.default) lines.push(`    default: ${opt.default}`);
+          if (opt.required) lines.push(`    required: true`);
+          if (opt.repeatable) lines.push(`    repeatable: true`);
+          if (opt.desc) lines.push(`    desc: ${opt.desc}`);
+        }
+      } else {
+        // Options grouped by action
+        lines.push('options:');
+        for (const [actionName, actionOpts] of Object.entries(options)) {
+          lines.push(`  ${actionName}:`);
+          for (const opt of actionOpts) {
+            lines.push(`    - flag: "${opt.flag}"`);
+            if (opt.arg) lines.push(`      arg: "${opt.arg}"`);
+            if (opt.values) lines.push(`      values: [${opt.values.join(', ')}]`);
+            if (opt.default) lines.push(`      default: ${opt.default}`);
+            if (opt.required) lines.push(`      required: true`);
+            if (opt.repeatable) lines.push(`      repeatable: true`);
+            if (opt.desc) lines.push(`      desc: ${opt.desc}`);
+          }
+        }
+      }
+    }
+
+    // Render examples
+    if (examples && examples.length > 0) {
+      lines.push('examples:');
+      for (const ex of examples) {
+        lines.push(`  - ${ex}`);
+      }
+    }
+
+    // Render terminology (for root help)
+    if (terminology && Object.keys(terminology).length > 0) {
+      lines.push('terminology:');
+      for (const [term, definition] of Object.entries(terminology)) {
+        lines.push(`  ${term}: ${definition}`);
+      }
     }
 
     return lines.join('\n');
@@ -331,7 +428,6 @@ class AiRenderer extends BaseRenderer {
     lines.push(`scope: ${entry.scope?.type || 'unknown'}`);
     if (entry.scope?.path) lines.push(`path: ${entry.scope.path}`);
     if (entry.scope?.git?.remote) lines.push(`git_remote: ${entry.scope.git.remote}`);
-    if (entry.scope?.git?.branch) lines.push(`git_branch: ${entry.scope.git.branch}`);
 
     // Check if viewing specific sections
     const viewingSpecificSections = showThinking || showSources || showExamples;
@@ -435,16 +531,67 @@ class AiRenderer extends BaseRenderer {
   }
 
   /**
-   * Render error
+   * Render error - supports both legacy and structured format
    */
   renderError() {
-    const { message } = this.data;
+    const { message, commands, suggestions } = this.data;
     const lines = [];
 
     lines.push('type: error');
     lines.push(`message: ${message || 'An unknown error occurred'}`);
 
+    // Structured error with commands and suggestions
+    if (commands && commands.length > 0) {
+      lines.push(`commands: [${commands.join(', ')}]`);
+    }
+
+    if (suggestions && suggestions.length > 0) {
+      lines.push('suggestions:');
+      for (const sug of suggestions) {
+        if (typeof sug === 'string') {
+          lines.push(`  - ${sug}`);
+        } else {
+          lines.push(`  - cmd: ${sug.cmd}`);
+          if (sug.desc) lines.push(`    desc: ${sug.desc}`);
+        }
+      }
+    }
+
     return lines.join('\n');
+  }
+
+  /**
+   * Render update confirmation (token-efficient)
+   */
+  renderUpdateEntry() {
+    const { entry, action } = this.data;
+    return `type: update_confirmation
+action: ${action}
+entry_id: ${entry.id}
+title: ${entry.title}
+updated_at: ${entry.updated_at}
+sources: ${entry.sources.length}
+examples: ${entry.examples.length}
+`;
+  }
+
+  /**
+   * Render entry version history (token-efficient)
+   */
+  renderEntryHistory() {
+    const { history, entryId } = this.data;
+    let output = `type: entry_history\nentry_id: ${entryId}\ntotal_versions: ${history.length}\nversions:\n`;
+
+    for (let i = 0; i < history.length; i++) {
+      const v = history[i];
+      output += `- version: ${i + 1}\n`;
+      output += `  archived: ${v.archived_at}\n`;
+      output += `  title: ${v.title}\n`;
+      output += `  sources: ${v.sources?.length || 0}\n`;
+      output += `  examples: ${v.examples?.length || 0}\n`;
+    }
+
+    return output;
   }
 
   /**
